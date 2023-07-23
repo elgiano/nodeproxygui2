@@ -1,7 +1,7 @@
 + NodeProxy {
 
-	gui2 { | limitUpdateRate = 0 |
-		^NodeProxyGui2.new(this, limitUpdateRate)
+	gui2 { | limitUpdateRate = 0, customGuis, customLayout |
+		^NodeProxyGui2.new(this, limitUpdateRate, customGuis, customLayout)
 	}
 
 }

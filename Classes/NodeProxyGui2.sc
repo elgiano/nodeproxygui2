@@ -2,6 +2,7 @@ NodeProxyGui2 {
 
 	classvar <>defaultIgnoreParams = #[];
 
+	var customGuis, customLayout;
 	var <>ignoreParams;
 	var <window;
 
@@ -16,12 +17,14 @@ NodeProxyGui2 {
 
 	var nodeProxyChangedFunc, specChangedFunc;
 
+	var customGuis, customLayout;
+
 	// this is a normal constructor method
-	*new { | nodeproxy, limitUpdateRate = 0 |
-		^super.new.init(nodeproxy, limitUpdateRate)
+	*new { | nodeproxy, limitUpdateRate = 0, customGuis(IdentityDictionary[]), customLayout |
+		^super.newCopyArgs(customGuis, customLayout).init(nodeproxy, limitUpdateRate)
 	}
 
-	init { | argNodeProxy, limitUpdateRate |
+	init { | argNodeProxy, limitUpdateRate, argCustomGuis, argCustomLayout |
 		nodeProxy = argNodeProxy;
 
 		this.initFonts();
@@ -40,9 +43,13 @@ NodeProxyGui2 {
 
 		this.setUpDependencies(limitUpdateRate.max(0));
 
-		this.makeParameterSection();
+		protect {
+			this.makeParameterSection();
+		} {
+			// TODO: handle errors by removing dependants
+			window.front;
+		};
 
-		window.front;
 	}
 
 	setUpDependencies { | limitUpdateRate |
@@ -166,49 +173,17 @@ NodeProxyGui2 {
 		//{ what == \free } {}
 	}
 
+	
 	parameterChanged { | key, val |
-		var spec;
-
-		case
-		{ val.isNumber } {
-			if(paramViews[key][\type] != \number, { this.makeParameterSection() });
-			spec = params[key].value;
-			paramViews[key][\numBox].value_(spec.constrain(val));
-			paramViews[key][\slider].value_(spec.unmap(val));
-		}
-		{ val.isArray } {
-			if(paramViews[key][\type] != \array, { this.makeParameterSection() });
-			spec = params[key].value;
-			if(val.every(_.isNumber)) {
-				val.do { | v, i |
-					paramViews[key][\numBoxes].wrapAt(i).value = spec.wrapAt(i).constrain(v);
-					paramViews[key][\sliders].wrapAt(i).value = spec.wrapAt(i).unmap(v)
-				};
+		var spec = params[key].value;
+		// TODO
+		var obj = paramViews[paramViews.keys.detect(_.matchItem(key))];
+		if(obj.notNil) {
+			if(obj[\type] === \custom) {
+				obj[\update].value(key, val, spec);
 			} {
-				paramViews[key][\textField].value_(val.collect{ | v, i |
-					spec.wrapAt(i).constrain(v);
-				});
-			};
-		}
-		{ val.isKindOf(Bus) } {
-			if(paramViews[key][\type] != \bus, { this.makeParameterSection() });
-			paramViews[key][\numBox].value_(val.index);
-			paramViews[key][\text].string_(val);
-		}
-		{ val.isKindOf(Buffer) } {
-			if(paramViews[key][\type] != \buffer, { this.makeParameterSection() });
-			paramViews[key][\numBox].value_(val.bufnum);
-			paramViews[key][\text].string_(val);
-		}
-		{ val.isKindOf(NodeProxy) } {
-			if(paramViews[key][\type] != \proxy, { this.makeParameterSection() });
-			if(val.isKindOf(Ndef), {
-				val = "% (%, %)".format(val, val.rate, val.numChannels)
-			});
-			paramViews[key][\text].string_(val);
-		}
-		{
-			"% parameter '%' not set".format(this.class, key).warn;
+				this.defaultParamViewUpdate(key, val, spec);
+			}
 		}
 	}
 
@@ -406,167 +381,221 @@ NodeProxyGui2 {
 
 		paramViews.clear;
 		params.sortedKeysValuesDo{ | key, spec |
-			var layout, paramVal;
-			var slider, valueBox, textField, staticText;
-
-			paramVal = nodeProxy.get(key);
-
-			layout = HLayout.new(
-				if (paramVal.isArray and: { paramVal.every(_.isNumber) }) {
-					[VLayout(*paramVal.collect { | v, n |
-						StaticText.new().string_(key++"["++n++"]")
-					}), s: 1]
-
-				} {
-					[StaticText.new().string_(key), s: 1]
-				}
-			);
-
-			case
-
-			{ paramVal.isNumber } {
-
-				slider = Slider.new()
-				.orientation_(\horizontal)
-				.value_(spec.unmap(paramVal))
-				.action_({ | obj |
-					var val = spec.map(obj.value);
-					valueBox.value = val;
-					nodeProxy.set(key, val);
-				});
-
-				valueBox = NumberBox.new()
-				.action_({ | obj |
-					var val = spec.constrain(obj.value);
-					slider.value_(spec.unmap(val));
-					nodeProxy.set(key, val);
-				})
-				.decimals_(4)
-				.value_(spec.constrain(paramVal));
-
-				// This is used to be able to fetch the sliders later when they need to be updated
-				paramViews.put(key, (type: \number, slider: slider, numBox: valueBox));
-
-				layout.add(valueBox, 1);
-				layout.add(slider, 4);
+			var customKey = customGuis.keys.detect(_.matchItem(key));
+			if (customKey.notNil) {
+				paramViews[customKey] = customGuis[customKey].value(customKey, params, nodeProxy);
+				paramViews[customKey][\type] = \custom;
+			} {
+				paramViews[key] = this.defaultParamView(key, spec);
 			}
+		};
 
-			{ paramVal.isArray and: { paramVal.every(_.isNumber) } } {
-
-				var sliders, valueBoxes;
-				sliders = paramVal.collect { |val, n|
-					Slider.new()
-					.orientation_(\horizontal)
-					.value_(spec.wrapAt(n).unmap(val))
-					.action_({ | obj |
-						var val = spec.wrapAt(n).map(obj.value);
-						valueBoxes[n].value = val;
-						nodeProxy.seti(key, n, val);
-					});
-				};
-
-				valueBoxes = paramVal.collect { |pVal, n|
-					NumberBox.new()
-					.action_({ | obj |
-						var val = spec.wrapAt(n).constrain(obj.value);
-						sliders[n].value_(spec.wrapAt(n).unmap(val));
-						nodeProxy.set(key, val);
-					})
-					.decimals_(4)
-					.value_(spec.wrapAt(n).constrain(pVal));
-				};
-
-				paramViews.put(key, (type: \array, sliders: sliders, numBoxes: valueBoxes));
-				layout.add(VLayout(*valueBoxes), 1);
-				layout.add(VLayout(*sliders), 4);
-			}
-			
-			{ paramVal.isArray } {
-
-				textField = TextField.new()
-				.action_({ | obj |
-					var val = try{ obj.value.interpret };  // this time as a feature!
-					if(val.notNil, {
-						val = val.asArray.collect{ | v, i | spec.wrapAt(i).constrain(v) };
-						obj.value = val;
-						nodeProxy.set(key, val);
-					});
-				})
-				.value_(paramVal);
-
-				paramViews.put(key, (type: \array, textField: textField));
-
-				layout.add(textField, 5);
-			}
-
-			{ paramVal.isKindOf(Bus) } {
-
-				valueBox = NumberBox.new()
-				.action_({ | obj |
-					var bus;
-					var val = spec.constrain(obj.value).asInteger;
-					obj.value = val;
-					bus = Bus.new(paramVal.rate, val, paramVal.numChannels);
-					nodeProxy.set(key, bus);
-				})
-				.value_(paramVal.index);
-
-				staticText = StaticText.new()
-				.string_(paramVal);
-
-				paramViews.put(key, (type: \bus, numBox: valueBox, text: staticText));
-
-				layout.add(valueBox, 1);
-				layout.add(staticText, 4);
-			}
-
-			{ paramVal.isKindOf(Buffer) } {
-
-				valueBox = NumberBox.new()
-				.action_({ | obj |
-					var buf;
-					var val = spec.constrain(obj.value).asInteger;
-					obj.value = val;
-					buf = Buffer.cachedBufferAt(paramVal.server, val);
-					if(buf.notNil, {
-						nodeProxy.set(key, buf);
-					});
-				})
-				.value_(paramVal.bufnum);
-
-				staticText = StaticText.new()
-				.string_(paramVal);
-
-				paramViews.put(key, (type: \buffer, numBox: valueBox, text: staticText));
-
-				layout.add(valueBox, 1);
-				layout.add(staticText, 4);
-			}
-
-			{ paramVal.isKindOf(NodeProxy) } {
-
-				if(paramVal.isKindOf(Ndef), {
-					paramVal = "% (%, %)".format(paramVal, paramVal.rate, paramVal.numChannels)
-				});
-
-				staticText = StaticText.new()
-				.string_(paramVal);
-
-				paramViews.put(key, (type: \proxy, text: staticText));
-
-				layout.add(staticText, 5);
-			}
-
-			{
-				"% parameter '%' ignored".format(this.class, key).warn;
-			};
-
-			view.layout.add(layout)
+		if (customLayout.notNil) {
+			var views = customLayout.value(paramViews.collect(_[\view]));
+			view.layout.add(views);
+		} {
+			paramViews.sortedKeysValuesDo{ |k, v| view.layout.add(v[\view]) };
 		};
 
 		view.children.do{ | c | c.font = font };
 
 		^view
+	}
+
+	defaultParamViewUpdate { | key, val, spec |
+		case
+		{ val.isNumber } {
+			if(paramViews[key][\type] != \number, { this.makeParameterSection() });
+			paramViews[key][\numBox].value_(spec.constrain(val));
+			paramViews[key][\slider].value_(spec.unmap(val));
+		}
+		{ val.isArray } {
+			if(paramViews[key][\type] != \array, { this.makeParameterSection() });
+			if(val.every(_.isNumber)) {
+				val.do { | v, i |
+					paramViews[key][\numBoxes].wrapAt(i).value = spec.wrapAt(i).constrain(v);
+					paramViews[key][\sliders].wrapAt(i).value = spec.wrapAt(i).unmap(v)
+				};
+			} {
+				paramViews[key][\textField].value_(val.collect{ | v, i |
+					spec.wrapAt(i).constrain(v);
+				});
+			};
+		}
+		{ val.isKindOf(Bus) } {
+			if(paramViews[key][\type] != \bus, { this.makeParameterSection() });
+			paramViews[key][\numBox].value_(val.index);
+			paramViews[key][\text].string_(val);
+		}
+		{ val.isKindOf(Buffer) } {
+			if(paramViews[key][\type] != \buffer, { this.makeParameterSection() });
+			paramViews[key][\numBox].value_(val.bufnum);
+			paramViews[key][\text].string_(val);
+		}
+		{ val.isKindOf(NodeProxy) } {
+			if(paramViews[key][\type] != \proxy, { this.makeParameterSection() });
+			if(val.isKindOf(Ndef), {
+				val = "% (%, %)".format(val, val.rate, val.numChannels)
+			});
+			paramViews[key][\text].string_(val);
+		}
+		{
+			"% parameter '%' not set".format(this.class, key).warn;
+		}
+	}
+
+	defaultParamView { | key, spec |
+		var layout, paramVal;
+		var slider, valueBox, textField, staticText, guiObj;
+
+		layout = HLayout.new(
+			[StaticText.new().string_(key), s: 1],
+		);
+
+		paramVal = nodeProxy.get(key);
+
+		case
+
+		{ paramVal.isNumber } {
+
+			slider = Slider.new()
+			.orientation_(\horizontal)
+			.value_(spec.unmap(paramVal))
+			.action_({ | obj |
+				var val = spec.map(obj.value);
+				valueBox.value = val;
+				nodeProxy.set(key, val);
+			});
+
+			valueBox = NumberBox.new()
+			.action_({ | obj |
+				var val = spec.constrain(obj.value);
+				slider.value_(spec.unmap(val));
+				nodeProxy.set(key, val);
+			})
+			.decimals_(4)
+			.value_(spec.constrain(paramVal));
+
+			// This is used to be able to fetch the sliders later when they need to be updated
+			guiObj = (type: \number, slider: slider, numBox: valueBox);
+
+			layout.add(valueBox, 1);
+			layout.add(slider, 4);
+		}
+
+		{ paramVal.isArray and: { paramVal.every(_.isNumber) } } {
+
+			var sliders, valueBoxes;
+			sliders = paramVal.collect { |val, n|
+				Slider.new()
+				.orientation_(\horizontal)
+				.value_(spec.wrapAt(n).unmap(val))
+				.action_({ | obj |
+					var val = spec.wrapAt(n).map(obj.value);
+					valueBoxes[n].value = val;
+					nodeProxy.seti(key, n, val);
+				});
+			};
+
+			valueBoxes = paramVal.collect { |pVal, n|
+				NumberBox.new()
+				.action_({ | obj |
+					var val = spec.wrapAt(n).constrain(obj.value);
+					sliders[n].value_(spec.wrapAt(n).unmap(val));
+					nodeProxy.set(key, val);
+				})
+				.decimals_(4)
+				.value_(spec.wrapAt(n).constrain(pVal));
+			};
+
+			paramViews.put(key, (type: \array, sliders: sliders, numBoxes: valueBoxes));
+			layout.add(VLayout(*valueBoxes), 1);
+			layout.add(VLayout(*sliders), 4);
+		}
+
+		{ paramVal.isArray } {
+
+			textField = TextField.new()
+			.action_({ | obj |
+				var val = try{ obj.value.interpret };  // this time as a feature!
+				if(val.notNil, {
+					val = val.asArray.collect{ | v, i | spec.wrapAt(i).constrain(v) };
+					obj.value = val;
+					nodeProxy.set(key, val);
+				});
+			})
+			.value_(paramVal);
+
+			guiObj = (type: \array, textField: textField);
+
+			layout.add(textField, 5);
+		}
+
+		{ paramVal.isKindOf(Bus) } {
+
+			valueBox = NumberBox.new()
+			.action_({ | obj |
+				var bus;
+				var val = spec.constrain(obj.value).asInteger;
+				obj.value = val;
+				bus = Bus.new(paramVal.rate, val, paramVal.numChannels);
+				nodeProxy.set(key, bus);
+			})
+			.value_(paramVal.index);
+
+			staticText = StaticText.new()
+			.string_(paramVal);
+
+			guiObj = (type: \bus, numBox: valueBox, text: staticText);
+
+			layout.add(valueBox, 1);
+			layout.add(staticText, 4);
+		}
+
+		{ paramVal.isKindOf(Buffer) } {
+
+			valueBox = NumberBox.new()
+			.action_({ | obj |
+				var buf;
+				var val = spec.constrain(obj.value).asInteger;
+				obj.value = val;
+				buf = Buffer.cachedBufferAt(paramVal.server, val);
+				if(buf.notNil, {
+					nodeProxy.set(key, buf);
+				});
+			})
+			.value_(paramVal.bufnum);
+
+			staticText = StaticText.new()
+			.string_(paramVal);
+
+			guiObj = (type: \buffer, numBox: valueBox, text: staticText);
+
+			layout.add(valueBox, 1);
+			layout.add(staticText, 4);
+		}
+
+		{ paramVal.isKindOf(NodeProxy) } {
+
+			if(paramVal.isKindOf(Ndef), {
+				paramVal = "% (%, %)".format(paramVal, paramVal.rate, paramVal.numChannels)
+			});
+
+			staticText = StaticText.new()
+			.string_(paramVal);
+
+			guiObj = (type: \proxy, text: staticText);
+
+			layout.add(staticText, 5);
+		}
+
+		{
+			// TODO: FIXME
+			"% parameter '%' ignored".format(this.class, key).warn;
+		};
+
+		guiObj[\view] = View().layout_(layout);
+		^guiObj;
 	}
 
 	initFonts {
